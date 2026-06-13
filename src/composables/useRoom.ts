@@ -1,5 +1,5 @@
 import { ref, computed, onMounted } from 'vue'
-import type { Room, Topic, Member, TopicType } from '@/types'
+import type { Room, Topic, Member, TopicType, GameMode, MatchPair, MatchRound, MatchResult } from '@/types'
 import { TOPIC_COLORS } from '@/types'
 import { 
   getRooms, getRoomById, getRoomByCode, saveRoom, deleteRoom 
@@ -8,6 +8,9 @@ import {
   generateId, generateRoomCode, addDays, getRandomItem, shuffleArray 
 } from '@/utils/helpers'
 import { AVATAR_EMOJIS } from '@/types'
+import { getRandomMatchQuestions } from '@/topics'
+
+const ROUNDS_PER_PAIR = 5
 
 export function useRoom() {
   const rooms = ref<Room[]>([])
@@ -41,7 +44,9 @@ export function useRoom() {
         }
       ],
       topics: [],
-      shuffledTopics: []
+      shuffledTopics: [],
+      gameMode: 'normal',
+      matchData: null
     }
     
     room.members.forEach(m => m.roomId = room.id)
@@ -178,7 +183,101 @@ export function useRoom() {
     room.status = 'preparing'
     room.currentTurn = 0
     room.shuffledTopics = []
+    room.matchData = null
     room.topics.forEach(t => t.isFlipped = false)
+    saveRoom(room)
+    
+    if (currentRoom.value?.id === roomId) {
+      currentRoom.value = room
+    }
+    loadRooms()
+    
+    return true
+  }
+
+  const setGameMode = (roomId: string, mode: GameMode): boolean => {
+    const room = getRoomById(roomId)
+    if (!room || room.status !== 'preparing') return false
+
+    room.gameMode = mode
+    if (mode === 'normal') {
+      room.matchData = null
+    }
+    saveRoom(room)
+    
+    if (currentRoom.value?.id === roomId) {
+      currentRoom.value = room
+    }
+    loadRooms()
+    
+    return true
+  }
+
+  const generateMatchPairs = (members: Member[]): MatchPair[] => {
+    const pairs: MatchPair[] = []
+    for (let i = 0; i < members.length; i++) {
+      for (let j = i + 1; j < members.length; j++) {
+        pairs.push({
+          id: generateId(),
+          member1Id: members[i].id,
+          member2Id: members[j].id,
+          member1Name: members[i].name,
+          member2Name: members[j].name
+        })
+      }
+    }
+    return shuffleArray(pairs)
+  }
+
+  const generateMatchRounds = (pairs: MatchPair[]): MatchRound[] => {
+    const rounds: MatchRound[] = []
+    const totalQuestions = pairs.length * ROUNDS_PER_PAIR
+    const questions = getRandomMatchQuestions(totalQuestions)
+    
+    let qIndex = 0
+    pairs.forEach(pair => {
+      for (let r = 0; r < ROUNDS_PER_PAIR; r++) {
+        rounds.push({
+          id: generateId(),
+          pairId: pair.id,
+          questionId: `q-${qIndex}`,
+          questionContent: questions[qIndex % questions.length],
+          answer1: '',
+          answer2: '',
+          isMatch: null,
+          answeredAt: null
+        })
+        qIndex++
+      }
+    })
+    return rounds
+  }
+
+  const startMatchGame = (roomId: string): boolean => {
+    const room = getRoomById(roomId)
+    if (!room || room.members.length < 2) {
+      error.value = '默契局至少需要2位成员'
+      return false
+    }
+
+    const pairs = generateMatchPairs(room.members)
+    const rounds = generateMatchRounds(pairs)
+    const results: MatchResult[] = pairs.map(p => ({
+      pairId: p.id,
+      totalRounds: ROUNDS_PER_PAIR,
+      matchedRounds: 0,
+      matchRate: 0
+    }))
+
+    room.status = 'playing'
+    room.gameMode = 'match'
+    room.matchData = {
+      pairs,
+      rounds,
+      currentPairIndex: 0,
+      currentRoundIndex: 0,
+      results
+    }
     saveRoom(room)
     
     if (currentRoom.value?.id === roomId) {
@@ -222,5 +321,8 @@ export function useRoom() {
     endGame,
     resetGame,
     removeRoom,
+    setGameMode,
+    startMatchGame,
+    generateMatchPairs,
   }
 }

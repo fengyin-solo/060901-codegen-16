@@ -3,8 +3,9 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useRoom } from '@/composables/useRoom'
 import { useExpire } from '@/composables/useExpire'
+import { useMatchGame } from '@/composables/useMatchGame'
 import { allTopics, getRandomQuestion } from '@/topics'
-import type { Topic, TopicType, TopicTemplate } from '@/types'
+import type { Topic, TopicType, TopicTemplate, GameMode } from '@/types'
 import { TOPIC_COLORS, TOPIC_EMOJIS } from '@/types'
 import TopicCard from '@/components/TopicCard.vue'
 import MemberAvatar from '@/components/MemberAvatar.vue'
@@ -12,8 +13,9 @@ import { copyToClipboard, getDaysRemaining } from '@/utils/helpers'
 
 const route = useRoute()
 const router = useRouter()
-const { loadRoom, currentRoom, addTopic, removeTopic, startGame, error, loadRooms } = useRoom()
+const { loadRoom, currentRoom, addTopic, removeTopic, startGame, error, loadRooms, setGameMode, startMatchGame } = useRoom()
 const { isRoomExpired, getExpirationWarning } = useExpire()
+const { getMatchRankings, getMemberSummary, calcProgress } = useMatchGame()
 
 const topicContent = ref('')
 const selectedType = ref<TopicType>('trouble')
@@ -37,9 +39,39 @@ const canStartGame = computed(() =>
   currentRoom.value?.topics.length && currentRoom.value.topics.length >= 1
 )
 
+const canStartMatchGame = computed(() => 
+  currentRoom.value?.members.length && currentRoom.value.members.length >= 2
+)
+
 const expirationWarning = computed(() => 
   currentRoom.value ? getExpirationWarning(currentRoom.value.expiresAt) : null
 )
+
+const matchRankings = computed(() => {
+  if (!currentRoom.value) return []
+  return getMatchRankings(currentRoom.value)
+})
+
+const memberSummary = computed(() => {
+  if (!currentRoom.value) return []
+  const summary = getMemberSummary(currentRoom.value)
+  return Object.entries(summary).map(([id, data]) => ({
+    id,
+    ...data
+  })).sort((a, b) => b.avgRate - a.avgRate)
+})
+
+const overallProgress = computed(() => {
+  if (!currentRoom.value) return { answered: 0, total: 0, percentage: 0 }
+  return calcProgress(currentRoom.value)
+})
+
+const matchModeBadge = computed(() => {
+  if (!currentRoom.value) return null
+  return currentRoom.value.gameMode === 'match'
+    ? { text: '默契局', emoji: '💞', color: 'bg-pink-100 text-pink-700' }
+    : { text: '普通局', emoji: '🎴', color: 'bg-purple-100 text-purple-700' }
+})
 
 onMounted(() => {
   loadRooms()
@@ -56,7 +88,11 @@ onMounted(() => {
   }
   
   if (currentRoom.value?.status === 'playing') {
-    router.push(`/room/${roomId.value}/game`)
+    if (currentRoom.value.gameMode === 'match') {
+      router.push(`/room/${roomId.value}/match`)
+    } else {
+      router.push(`/room/${roomId.value}/game`)
+    }
   }
   
   if (currentRoom.value?.members.length) {
@@ -111,9 +147,17 @@ const handleCopyCode = () => {
   }
 }
 
-const handleStartGame = () => {
-  if (startGame(roomId.value)) {
-    router.push(`/room/${roomId.value}/game`)
+const handleSelectMode = (mode: GameMode) => {
+  setGameMode(roomId.value, mode)
+  
+  if (mode === 'match') {
+    if (startMatchGame(roomId.value)) {
+      router.push(`/room/${roomId.value}/match`)
+    }
+  } else {
+    if (startGame(roomId.value)) {
+      router.push(`/room/${roomId.value}/game`)
+    }
   }
 }
 
@@ -122,7 +166,27 @@ const goBack = () => {
 }
 
 const goToGame = () => {
-  router.push(`/room/${roomId.value}/game`)
+  if (currentRoom.value?.gameMode === 'match') {
+    router.push(`/room/${roomId.value}/match`)
+  } else {
+    router.push(`/room/${roomId.value}/game`)
+  }
+}
+
+const getMatchRateColor = (rate: number) => {
+  if (rate >= 80) return 'from-pink-500 to-rose-500'
+  if (rate >= 60) return 'from-orange-400 to-pink-500'
+  if (rate >= 40) return 'from-yellow-400 to-orange-400'
+  return 'from-gray-400 to-gray-500'
+}
+
+const getMatchRateLabel = (rate: number) => {
+  if (rate >= 90) return '灵魂伴侣'
+  if (rate >= 80) return '超级默契'
+  if (rate >= 60) return '默契十足'
+  if (rate >= 40) return '还不错哦'
+  if (rate >= 20) return '需要磨合'
+  return '最熟悉的陌生人'
 }
 </script>
 
@@ -153,9 +217,14 @@ const goToGame = () => {
       <div class="bg-white rounded-3xl p-6 shadow-lg mb-6">
         <div class="flex flex-col md:flex-row md:items-start md:justify-between gap-4 mb-6">
           <div>
-            <h1 class="text-2xl md:text-3xl font-bold text-gray-800 mb-2">
-              🎒 {{ currentRoom.name }}
-            </h1>
+            <div class="flex items-center gap-3 mb-2 flex-wrap">
+              <h1 class="text-2xl md:text-3xl font-bold text-gray-800">
+                🎒 {{ currentRoom.name }}
+              </h1>
+              <span v-if="matchModeBadge" :class="['text-xs px-3 py-1 rounded-full font-medium', matchModeBadge.color]">
+                {{ matchModeBadge.emoji }} {{ matchModeBadge.text }}
+              </span>
+            </div>
             <div class="flex flex-wrap items-center gap-3">
               <div class="flex items-center gap-2">
                 <span class="text-gray-500">邀请码：</span>
@@ -206,17 +275,45 @@ const goToGame = () => {
           </div>
         </div>
 
-        <div v-if="currentRoom.status === 'preparing'" class="flex gap-3">
+        <div v-if="currentRoom.status === 'preparing'" class="space-y-3">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <button 
+              class="px-6 py-4 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-2xl font-medium hover:opacity-90 transition-all flex flex-col items-start gap-2 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg"
+              :disabled="!canStartGame"
+              @click="handleSelectMode('normal')"
+            >
+              <div class="flex items-center gap-2">
+                <span class="text-2xl">🎴</span>
+                <span class="text-lg font-bold">普通局</span>
+              </div>
+              <p class="text-sm text-white/80 text-left">
+                轮流翻牌，聊聊大家提前丢好的话题
+              </p>
+              <p v-if="!canStartGame" class="text-xs text-white/60">
+                ⚠️ 至少需要 1 个话题
+              </p>
+            </button>
+            
+            <button 
+              class="px-6 py-4 bg-gradient-to-r from-pink-500 via-rose-500 to-fuchsia-500 text-white rounded-2xl font-medium hover:opacity-90 transition-all flex flex-col items-start gap-2 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg"
+              :disabled="!canStartMatchGame"
+              @click="handleSelectMode('match')"
+            >
+              <div class="flex items-center gap-2">
+                <span class="text-2xl">💞</span>
+                <span class="text-lg font-bold">双人默契局</span>
+              </div>
+              <p class="text-sm text-white/80 text-left">
+                随机配对，两人同时作答看默契度
+              </p>
+              <p v-if="!canStartMatchGame" class="text-xs text-white/60">
+                ⚠️ 至少需要 2 位成员
+              </p>
+            </button>
+          </div>
+          
           <button 
-            class="flex-1 px-6 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-xl font-medium hover:opacity-90 transition-opacity flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-            :disabled="!canStartGame"
-            @click="handleStartGame"
-          >
-            <span class="text-xl">🎴</span>
-            开始洗牌翻牌
-          </button>
-          <button 
-            class="px-6 py-3 bg-white border-2 border-dashed border-purple-300 text-purple-600 rounded-xl font-medium hover:bg-purple-50 transition-colors"
+            class="w-full px-6 py-3 bg-white border-2 border-dashed border-purple-300 text-purple-600 rounded-xl font-medium hover:bg-purple-50 transition-colors"
             @click="showAddTopic = true"
           >
             + 丢话题
@@ -268,7 +365,102 @@ const goToGame = () => {
         </div>
       </div>
 
-      <div v-if="currentRoom.topics.length === 0" class="text-center py-16 bg-white rounded-3xl shadow-md">
+      <div v-if="currentRoom.gameMode === 'match' && matchRankings.length > 0" class="mb-6">
+        <div class="bg-gradient-to-br from-pink-50 via-rose-50 to-fuchsia-50 rounded-3xl p-6 shadow-lg border border-pink-100">
+          <h2 class="text-xl font-bold text-gray-800 mb-6 flex items-center gap-2">
+            <span>🏆</span> 默契表现排行榜
+          </h2>
+
+          <div class="mb-8">
+            <div class="flex justify-between items-center mb-2">
+              <span class="text-sm font-medium text-gray-600">总体进度</span>
+              <span class="text-sm font-mono text-gray-600">{{ overallProgress.answered }} / {{ overallProgress.total }}</span>
+            </div>
+            <div class="h-3 bg-white/60 rounded-full overflow-hidden">
+              <div 
+                class="h-full bg-gradient-to-r from-pink-500 to-rose-500 rounded-full transition-all duration-500"
+                :style="{ width: `${overallProgress.percentage}%` }"
+              ></div>
+            </div>
+          </div>
+
+          <div class="mb-8">
+            <h3 class="text-sm font-bold text-gray-700 mb-4 flex items-center gap-2">
+              <span>💑</span> 最佳默契搭档
+            </h3>
+            <div class="space-y-3">
+              <div 
+                v-for="(item, index) in matchRankings" 
+                :key="item.pairId"
+                class="bg-white rounded-2xl p-4 shadow-sm"
+              >
+                <div class="flex items-center justify-between mb-3">
+                  <div class="flex items-center gap-3">
+                    <div 
+                      class="w-8 h-8 rounded-full flex items-center justify-center font-bold text-white text-sm"
+                      :class="{
+                        'bg-yellow-400': index === 0,
+                        'bg-gray-400': index === 1,
+                        'bg-orange-400': index === 2,
+                        'bg-gray-300': index > 2
+                      }"
+                    >
+                      {{ index + 1 }}
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <span class="font-bold text-gray-800">{{ item.pair.member1Name }}</span>
+                      <span class="text-pink-400">💞</span>
+                      <span class="font-bold text-gray-800">{{ item.pair.member2Name }}</span>
+                    </div>
+                  </div>
+                  <div class="text-right">
+                    <div class="text-2xl font-bold text-pink-600">{{ item.matchRate }}%</div>
+                    <div class="text-xs text-gray-500">{{ item.matchedRounds }} / {{ item.totalRounds }} 题</div>
+                  </div>
+                </div>
+                <div class="h-2 bg-gray-100 rounded-full overflow-hidden mb-2">
+                  <div 
+                    class="h-full rounded-full transition-all duration-500 bg-gradient-to-r"
+                    :class="getMatchRateColor(item.matchRate)"
+                    :style="{ width: `${item.matchRate}%` }"
+                  ></div>
+                </div>
+                <div class="flex items-center justify-between">
+                  <span class="text-xs text-gray-500">默契指数：</span>
+                  <span class="text-xs font-medium px-2 py-0.5 rounded-full bg-pink-100 text-pink-700">
+                    {{ getMatchRateLabel(item.matchRate) }}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="memberSummary.length > 0">
+            <h3 class="text-sm font-bold text-gray-700 mb-4 flex items-center gap-2">
+              <span>👤</span> 个人默契表现
+            </h3>
+            <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+              <div 
+                v-for="member in memberSummary" 
+                :key="member.id"
+                class="bg-white rounded-xl p-3 text-center shadow-sm"
+              >
+                <div class="text-lg font-bold text-gray-800 mb-1">{{ member.name }}</div>
+                <div class="text-xl font-bold text-purple-600 mb-1">{{ member.avgRate }}%</div>
+                <div class="text-xs text-gray-500">平均默契率</div>
+                <div class="mt-2 pt-2 border-t border-gray-100">
+                  <div class="text-xs text-gray-500">
+                    答对 <span class="font-medium text-green-600">{{ member.totalMatches }}</span> / 
+                    共 <span class="font-medium">{{ member.totalRounds }}</span> 题
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="currentRoom.topics.length === 0 && currentRoom.gameMode !== 'match'" class="text-center py-16 bg-white rounded-3xl shadow-md">
         <div class="text-6xl mb-4">🎁</div>
         <p class="text-gray-500 text-lg mb-4">保鲜袋还是空的，快丢点话题进去吧！</p>
         <button 

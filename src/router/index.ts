@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import HomePage from '@/pages/HomePage.vue'
 import RoomPage from '@/pages/RoomPage.vue'
 import GamePage from '@/pages/GamePage.vue'
+import MatchGamePage from '@/pages/MatchGamePage.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -20,6 +21,11 @@ const router = createRouter({
       path: '/room/:id/game',
       name: 'game',
       component: GamePage
+    },
+    {
+      path: '/room/:id/match',
+      name: 'match',
+      component: MatchGamePage
     }
   ]
 })

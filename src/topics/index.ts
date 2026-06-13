@@ -2,11 +2,13 @@ import type { TopicTemplate, TopicType } from '@/types'
 import { defaultTopics } from './default'
 import { deepTopics } from './deep'
 import { sillyTopics } from './silly'
+import { matchTopics } from './match'
 
 export const allTopics: TopicTemplate[] = [
   ...defaultTopics,
   deepTopics,
-  sillyTopics
+  sillyTopics,
+  matchTopics
 ]
 
 export function getTopicTemplate(type: TopicType): TopicTemplate | undefined {
@@ -27,3 +29,4 @@ export function getRandomBackupQuestion(): string {
 export * from './default'
 export * from './deep'
 export * from './silly'
+export * from './match'
